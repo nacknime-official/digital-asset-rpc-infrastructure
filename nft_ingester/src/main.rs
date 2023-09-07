@@ -97,67 +97,53 @@ pub async fn main() -> Result<(), IngesterError> {
     if role != IngesterRole::BackgroundTaskRunner {
         tasks.spawn(bg_task_listener);
     }
-    let mut timer_acc = StreamSizeTimer::new(
-        stream_metrics_timer,
-        config.messenger_config.clone(),
-        ACCOUNT_STREAM,
-    )?;
-    let mut timer_txn = StreamSizeTimer::new(
-        stream_metrics_timer,
-        config.messenger_config.clone(),
-        TRANSACTION_STREAM,
-    )?;
-
-    if let Some(t) = timer_acc.start::<RedisMessenger>().await {
-        tasks.spawn(t);
-    }
-    if let Some(t) = timer_txn.start::<RedisMessenger>().await {
-        tasks.spawn(t);
-    }
+    // let mut timer_acc = StreamSizeTimer::new(
+    //     stream_metrics_timer,
+    //     config.messenger_config.clone(),
+    //     ACCOUNT_STREAM,
+    // )?;
+    // let mut timer_txn = StreamSizeTimer::new(
+    //     stream_metrics_timer,
+    //     config.messenger_config.clone(),
+    //     TRANSACTION_STREAM,
+    // )?;
+    //
+    // if let Some(t) = timer_acc.start::<RedisMessenger>().await {
+    //     tasks.spawn(t);
+    // }
+    // if let Some(t) = timer_txn.start::<RedisMessenger>().await {
+    //     tasks.spawn(t);
+    // }
 
     // Stream Consumers Setup -------------------------------------
     if role == IngesterRole::Ingester || role == IngesterRole::All {
-        let (_ack_task, ack_sender) =
-            ack_worker::<RedisMessenger>(config.get_messneger_client_config());
-        for i in 0..config.get_account_stream_worker_count() {
-            let _account = account_worker::<RedisMessenger>(
-                database_pool.clone(),
-                config.get_messneger_client_config(),
-                bg_task_sender.clone(),
-                ack_sender.clone(),
-                if i == 0 {
-                    ConsumptionType::Redeliver
-                } else {
-                    ConsumptionType::New
-                },
-            );
-        }
-        for i in 0..config.get_transaction_stream_worker_count() {
-            let _txn = transaction_worker::<RedisMessenger>(
-                database_pool.clone(),
-                config.get_messneger_client_config(),
-                bg_task_sender.clone(),
-                ack_sender.clone(),
-                if i == 0 {
-                    ConsumptionType::Redeliver
-                } else {
-                    ConsumptionType::New
-                },
-            );
-        }
+        let _account = account_worker(database_pool.clone(), bg_task_sender.clone());
+        // for i in 0..config.get_transaction_stream_worker_count() {
+        //     let _txn = transaction_worker::<RedisMessenger>(
+        //         database_pool.clone(),
+        //         config.get_messneger_client_config(),
+        //         bg_task_sender.clone(),
+        //         ack_sender.clone(),
+        //         if i == 0 {
+        //             ConsumptionType::Redeliver
+        //         } else {
+        //             ConsumptionType::New
+        //         },
+        //     );
+        // }
     }
     // Stream Size Timers ----------------------------------------
     // Setup Stream Size Timers, these are small processes that run every 60 seconds and farm metrics for the size of the streams.
     // If metrics are disabled, these will not run.
-    if role == IngesterRole::BackgroundTaskRunner || role == IngesterRole::All {
-        let background_runner_config = config.clone().background_task_runner_config;
-        tasks.spawn(background_task_manager.start_runner(background_runner_config));
-    }
-    // Backfiller Setup ------------------------------------------
-    if role == IngesterRole::Backfiller || role == IngesterRole::All {
-        let backfiller = setup_backfiller::<RedisMessenger>(database_pool.clone(), config.clone());
-        tasks.spawn(backfiller);
-    }
+    // if role == IngesterRole::BackgroundTaskRunner || role == IngesterRole::All {
+    //     let background_runner_config = config.clone().background_task_runner_config;
+    //     tasks.spawn(background_task_manager.start_runner(background_runner_config));
+    // }
+    // // Backfiller Setup ------------------------------------------
+    // if role == IngesterRole::Backfiller || role == IngesterRole::All {
+    //     let backfiller = setup_backfiller::<RedisMessenger>(database_pool.clone(), config.clone());
+    //     tasks.spawn(backfiller);
+    // }
 
     let roles_str = role.to_string();
     metric! {
@@ -171,7 +157,7 @@ pub async fn main() -> Result<(), IngesterError> {
         }
     }
 
-    tasks.shutdown().await;
+    // tasks.shutdown().await;
 
     Ok(())
 }
