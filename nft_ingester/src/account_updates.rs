@@ -8,6 +8,7 @@ use chrono::Utc;
 use flatbuffers::FlatBufferBuilder;
 use log::{debug, info};
 use plerkle_messenger::ACCOUNT_STREAM;
+use solana_geyser_zmq::flatbuffer::account_data_generated::account_data::root_as_account_data;
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
@@ -80,6 +81,46 @@ pub fn account_worker(
     // })
 }
 
+fn map_account_info_fb_bytes<'b>(
+    account_update: solana_geyser_zmq::flatbuffer::account_info_generated::account_info::AccountInfo<'b>,
+) -> Vec<u8> {
+    let account_data = account_update
+        .account_data()
+        .map(|data| root_as_account_data(data.bytes()).unwrap());
+
+    let pubkey = account_update
+        .pubkey()
+        .map(|pb| plerkle_serialization::Pubkey::new(&Pubkey::from_str(pb).unwrap().to_bytes()));
+    let owner = account_update.owner().map(|owner| {
+        plerkle_serialization::Pubkey::new(&Pubkey::from_str(owner).unwrap().to_bytes())
+    });
+    let mut builder = FlatBufferBuilder::new();
+    let data =
+        account_data.map(|data| builder.create_vector(data.data().unwrap().bytes().as_ref()));
+
+    let mut args = plerkle_serialization::AccountInfoArgs {
+        pubkey: pubkey.as_ref(),
+        owner: owner.as_ref(),
+        data,
+        slot: account_update.slot(),
+        // TODO: there's no is_startup in our flatbuffers, so use default value
+        is_startup: false,
+        // TODO: ok or not? I think it'll be better if we add this field to our AccountInfo
+        // flatbuffer and let the geyser plugin fill it
+        seen_at: Utc::now().timestamp_millis(),
+        ..Default::default()
+    };
+    if let Some(data) = account_data {
+        args.lamports = data.lamports();
+        args.executable = data.executable();
+        args.rent_epoch = data.rent_epoch();
+        args.write_version = data.version();
+    }
+    let account_info_wip = plerkle_serialization::AccountInfo::create(&mut builder, &args);
+    builder.finish(account_info_wip, None);
+    builder.finished_data().to_owned()
+}
+
 async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Option<String> {
     let id = "1".to_string(); // TODO: used only for metrics, probably will be dropped
     let mut ret_id = None;
@@ -89,7 +130,6 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
             &item,
         )
     {
-        info!("here");
         let str_program_id = account_update.owner().unwrap();
 
         metric! {
@@ -105,38 +145,9 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
 
         // TODO: how to deal with these unwraps?
         // maybe return errors form this func and log them at higher level?
-        let account_data = solana_geyser_zmq::flatbuffer::account_data_generated::account_data::root_as_account_data(
-            account_update.account_data().unwrap().bytes(),
-        ).unwrap();
-        let pubkey = Pubkey::from_str(account_update.pubkey().unwrap())
-            .unwrap()
-            .to_bytes();
-        let owner = Pubkey::from_str(str_program_id).unwrap().to_bytes();
-
-        let mut builder = FlatBufferBuilder::new();
-        let data = builder.create_vector(account_data.data().unwrap().bytes().as_ref());
-        let account_info_wip = plerkle_serialization::AccountInfo::create(
-            &mut builder,
-            &plerkle_serialization::AccountInfoArgs {
-                pubkey: Some(&plerkle_serialization::Pubkey::new(&pubkey)),
-                lamports: account_data.lamports(),
-                owner: Some(&plerkle_serialization::Pubkey::new(&owner)),
-                executable: account_data.executable(),
-                rent_epoch: account_data.rent_epoch(),
-                data: Some(data),
-                write_version: account_data.version(),
-                slot: account_update.slot(),
-                is_startup: false, // TODO: there's no is_startup in our flatbuffers, so use
-                // default value
-                seen_at: Utc::now().timestamp_millis(), // TODO: ok or not? I think it'll be better
-                                                        // if we add this field to our AccountInfo
-                                                        // flatbuffer and let the geyser plugin
-                                                        // fill it
-            },
-        );
-        builder.finish(account_info_wip, None);
+        let account_info_bytes = map_account_info_fb_bytes(account_update);
         let account_info =
-            plerkle_serialization::root_as_account_info(builder.finished_data()).unwrap();
+            plerkle_serialization::root_as_account_info(account_info_bytes.as_slice()).unwrap();
 
         let mut account = None;
         if let Some(pubkey) = account_update.pubkey() {
