@@ -2753,6 +2753,7 @@ dependencies = [
  "anchor-lang",
  "async-trait",
  "base64 0.21.0",
+ "bincode",
  "blockbuster",
  "borsh 0.9.3",
  "bs58 0.4.0",

@@ -118,18 +118,7 @@ pub async fn main() -> Result<(), IngesterError> {
     // Stream Consumers Setup -------------------------------------
     if role == IngesterRole::Ingester || role == IngesterRole::All {
         let _account = account_worker(database_pool.clone(), bg_task_sender.clone());
-        // for i in 0..config.get_transaction_stream_worker_count() {
-        //     let _txn = transaction_worker::<RedisMessenger>(
-        //         database_pool.clone(),
-        //         config.get_messneger_client_config(),
-        //         bg_task_sender.clone(),
-        //         ack_sender.clone(),
-        //         if i == 0 {
-        //             ConsumptionType::Redeliver
-        //         } else {
-        //             ConsumptionType::New
-        //         },
-        //     );
+        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone());
         // }
     }
     // Stream Size Timers ----------------------------------------

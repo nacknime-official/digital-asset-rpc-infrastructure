@@ -61,6 +61,7 @@ tracing-subscriber = { version = "0.3.16", features = [
 clap = { version = "4.2.2", features = ["derive", "cargo"] }
 # solana-geyser-plugin-scaffold = { git = "https://github.com/extrnode/solana-geyser-zmq", version = "1.11.2" }
 solana_geyser_zmq = { package = "solana-geyser-plugin-scaffold", path = "../../solana-geyser-zmq" }
+bincode = "1.3.3"
 
 [dependencies.num-integer]
 version = "0.1.44"
