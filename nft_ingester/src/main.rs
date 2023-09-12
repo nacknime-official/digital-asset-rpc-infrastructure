@@ -23,6 +23,7 @@ use crate::{
     tasks::{BgTask, DownloadMetadataTask, TaskManager},
     tcp_receiver::RoutingTcpReceiver,
     transaction_notifications::transaction_worker,
+    transaction_notifications::transaction_worker_backfiller,
 };
 use cadence_macros::{is_global_default_set, statsd_count};
 use chrono::Duration;
@@ -118,12 +119,19 @@ pub async fn main() -> Result<(), IngesterError> {
     // }
 
     // Stream Consumers Setup -------------------------------------
-    let tcp_receiver =
-        RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
     if role == IngesterRole::Ingester || role == IngesterRole::All {
+        let tcp_receiver =
+            RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
         let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
         let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
+        // TODO: don't know do we need wrap it to tasks.spawn
+        tasks.spawn(tokio::spawn(async move {
+            tcp_receiver
+                .connect("127.0.0.1:3333".parse().unwrap())
+                .unwrap()
+        }));
     }
+
     // Stream Size Timers ----------------------------------------
     // Setup Stream Size Timers, these are small processes that run every 60 seconds and farm metrics for the size of the streams.
     // If metrics are disabled, these will not run.
@@ -131,18 +139,24 @@ pub async fn main() -> Result<(), IngesterError> {
     //     let background_runner_config = config.clone().background_task_runner_config;
     //     tasks.spawn(background_task_manager.start_runner(background_runner_config));
     // }
-    // // Backfiller Setup ------------------------------------------
-    // if role == IngesterRole::Backfiller || role == IngesterRole::All {
-    //     let backfiller = setup_backfiller::<RedisMessenger>(database_pool.clone(), config.clone());
-    //     tasks.spawn(backfiller);
-    // }
+    // Backfiller Setup ------------------------------------------
+    if role == IngesterRole::Backfiller || role == IngesterRole::All {
+        let backfiller = setup_backfiller(database_pool.clone(), config.clone());
+        tasks.spawn(backfiller);
 
-    // TODO: don't know do we need wrap it to tasks.spawn
-    tasks.spawn(tokio::spawn(async move {
-        tcp_receiver
-            .connect("127.0.0.1:3333".parse().unwrap())
-            .unwrap()
-    }));
+        let tcp_receiver =
+            RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
+        let _txn = transaction_worker_backfiller(
+            database_pool.clone(),
+            bg_task_sender.clone(),
+            &tcp_receiver,
+        );
+        tasks.spawn(tokio::spawn(async move {
+            tcp_receiver
+                .connect("127.0.0.1:3334".parse().unwrap())
+                .unwrap()
+        }));
+    }
 
     // let roles_str = role.to_string();
     // metric! {

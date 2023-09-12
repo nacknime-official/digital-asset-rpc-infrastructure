@@ -8,7 +8,6 @@ use digital_asset_types::dao::backfill_items;
 use flatbuffers::FlatBufferBuilder;
 use futures::{stream::FuturesUnordered, StreamExt};
 use log::{debug, error, info};
-use plerkle_messenger::{Messenger, TRANSACTION_STREAM};
 use plerkle_serialization::serializer::seralize_encoded_transaction_with_status;
 
 use sea_orm::{
@@ -22,6 +21,7 @@ use solana_client::{
     rpc_config::{RpcAccountInfoConfig, RpcBlockConfig, RpcProgramAccountsConfig},
     rpc_filter::{Memcmp, RpcFilterType},
 };
+use solana_geyser_zmq::{flatbuffer::BYTE_PREFIX_TX, sender::TcpSender};
 use solana_sdk::{
     account::Account,
     commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -68,7 +68,7 @@ const BLOCK_CACHE_DURATION: u64 = 172800;
 
 struct SlotSeq(u64, u64);
 /// Main public entry point for backfiller task.
-pub fn setup_backfiller<T: Messenger>(
+pub fn setup_backfiller(
     pool: Pool<Postgres>,
     config: IngesterConfig,
 ) -> tokio::task::JoinHandle<()> {
@@ -86,7 +86,7 @@ pub fn setup_backfiller<T: Messenger>(
             let bc = Arc::clone(&block_cache);
             tasks.spawn(async move {
                 info!("Backfiller filler running");
-                let mut backfiller = Backfiller::<T>::new(pool_cloned, config_cloned, &bc).await;
+                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc).await;
                 backfiller.run_filler().await;
             });
 
@@ -95,7 +95,7 @@ pub fn setup_backfiller<T: Messenger>(
             let bc = Arc::clone(&block_cache);
             tasks.spawn(async move {
                 info!("Backfiller finder running");
-                let mut backfiller = Backfiller::<T>::new(pool_cloned, config_cloned, &bc).await;
+                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc).await;
                 backfiller.run_finder().await;
             });
 
@@ -182,22 +182,22 @@ impl GapInfo {
 }
 
 /// Main struct used for backfiller task.
-struct Backfiller<'a, T: Messenger> {
+struct Backfiller<'a> {
     db: DatabaseConnection,
     rpc_client: RpcClient,
     rpc_block_config: RpcBlockConfig,
-    messenger: T,
+    sender: TcpSender,
     failure_delay: u64,
     cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
 }
 
-impl<'a, T: Messenger> Backfiller<'a, T> {
+impl<'a> Backfiller<'a> {
     /// Create a new `Backfiller` struct.
     async fn new(
         pool: Pool<Postgres>,
         config: IngesterConfig,
         cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
-    ) -> Backfiller<'a, T> {
+    ) -> Backfiller<'a> {
         // Create Sea ORM database connection used later for queries.
         let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
 
@@ -254,18 +254,14 @@ impl<'a, T: Messenger> Backfiller<'a, T> {
         // Instantiate RPC client.
         let rpc_client = RpcClient::new_with_commitment(rpc_url, rpc_commitment);
 
-        // Instantiate messenger.
-        let mut messenger = T::new(config.get_messneger_client_config()).await.unwrap();
-        messenger.add_stream(TRANSACTION_STREAM).await.unwrap();
-        messenger
-            .set_buffer_size(TRANSACTION_STREAM, 10_000_000)
-            .await;
+        // Instantiate sender.
+        let sender = TcpSender::new(2097152);
 
         Self {
             db,
             rpc_client,
             rpc_block_config,
-            messenger,
+            sender,
             failure_delay: INITIAL_FAILURE_DELAY,
             cache,
         }
@@ -314,6 +310,8 @@ impl<'a, T: Messenger> Backfiller<'a, T> {
     }
     /// Run the backfiller task.
     async fn run_filler(&mut self) {
+        self.sender.bind(3334, 5000).unwrap();
+
         let mut interval =
             time::interval(tokio::time::Duration::from_millis(MAX_BACKFILL_CHECK_WAIT));
         loop {
@@ -943,9 +941,11 @@ impl<'a, T: Messenger> Backfiller<'a, T> {
                     block_time: block_data.block_time,
                 };
                 let builder = seralize_encoded_transaction_with_status(builder, tx_wrap)?;
-                self.messenger
-                    .send(TRANSACTION_STREAM, builder.finished_data())
-                    .await?;
+                let mut output = vec![BYTE_PREFIX_TX];
+                output.extend(builder.finished_data());
+                self.sender.publish(output).map_err(|e| {
+                    IngesterError::BackfillSenderError(format!("Error publishing: {}", e))
+                })?;
             }
             drop(block_ref);
         }

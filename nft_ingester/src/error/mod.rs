@@ -52,6 +52,8 @@ pub enum IngesterError {
     HttpError { status_code: String },
     #[error("AssetIndex Error {0}")]
     AssetIndexError(String),
+    #[error("Backfill sender error: {0}")]
+    BackfillSenderError(String),
 }
 
 impl From<reqwest::Error> for IngesterError {

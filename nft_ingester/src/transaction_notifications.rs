@@ -203,3 +203,68 @@ async fn handle_transaction(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> 
     }
     ret_id
 }
+pub fn transaction_worker_backfiller(
+    pool: Pool<Postgres>,
+    bg_task_sender: UnboundedSender<TaskData>,
+    receiver: &RoutingTcpReceiver,
+) -> () {
+    let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
+
+    // TODO: do not create it here, use already created receiver
+    receiver.register_callback(
+        solana_geyser_zmq::flatbuffer::BYTE_PREFIX_TX,
+        Box::new(move |data| {
+            debug!("TX WORKER BACKFILLER DATA RECEIVED {:?}", data);
+
+            let manager_clone = Arc::clone(&manager);
+            // TODO: maybe make the callback itself async?
+            debug!("before tokio spawn here");
+            tokio::spawn(async move {
+                debug!("tokio spawn here");
+                handle_transaction_backfiller(manager_clone, data).await;
+                debug!("after tokio spawn here");
+            });
+        }),
+    );
+}
+
+async fn handle_transaction_backfiller(
+    manager: Arc<ProgramTransformer>,
+    item: Vec<u8>,
+) -> Option<String> {
+    let id = "1".to_string(); // TODO: used only for metrics, probably will be dropped
+    let mut ret_id = None;
+
+    if let Ok(tx) = plerkle_serialization::root_as_transaction_info(&item) {
+        let signature = tx.signature().unwrap_or("NO SIG");
+        debug!("Received transaction: {}", signature);
+        metric! {
+            statsd_count!("ingester.seen", 1, "stream" => TRANSACTION_STREAM);
+        }
+        let seen_at = Utc::now();
+        metric! {
+            statsd_time!(
+                "ingester.bus_ingest_time",
+                (seen_at.timestamp_millis() - tx.seen_at()) as u64,
+                "stream" => TRANSACTION_STREAM
+            );
+        }
+
+        let begin = Instant::now();
+        let res = manager.handle_transaction(&tx).await;
+        let should_ack = capture_result(
+            id.clone(),
+            TRANSACTION_STREAM,
+            ("txn", "txn"),
+            1, // TODO: here was "item.tries". that's for metrics, so we can ignore it for now
+            res,
+            begin,
+            tx.signature(),
+            None,
+        );
+        if should_ack {
+            ret_id = Some(id);
+        }
+    }
+    ret_id
+}
