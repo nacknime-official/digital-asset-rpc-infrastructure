@@ -8,6 +8,7 @@ pub mod metrics;
 mod program_transformers;
 mod stream;
 pub mod tasks;
+mod tcp_receiver;
 mod transaction_notifications;
 
 use crate::{
@@ -20,6 +21,7 @@ use crate::{
     metrics::setup_metrics,
     stream::StreamSizeTimer,
     tasks::{BgTask, DownloadMetadataTask, TaskManager},
+    tcp_receiver::RoutingTcpReceiver,
     transaction_notifications::transaction_worker,
 };
 use cadence_macros::{is_global_default_set, statsd_count};
@@ -116,10 +118,11 @@ pub async fn main() -> Result<(), IngesterError> {
     // }
 
     // Stream Consumers Setup -------------------------------------
+    let tcp_receiver =
+        RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
     if role == IngesterRole::Ingester || role == IngesterRole::All {
-        let _account = account_worker(database_pool.clone(), bg_task_sender.clone());
-        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone());
-        // }
+        let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
+        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
     }
     // Stream Size Timers ----------------------------------------
     // Setup Stream Size Timers, these are small processes that run every 60 seconds and farm metrics for the size of the streams.
@@ -134,12 +137,25 @@ pub async fn main() -> Result<(), IngesterError> {
     //     tasks.spawn(backfiller);
     // }
 
-    let roles_str = role.to_string();
-    metric! {
-        statsd_count!("ingester.startup", 1, "role" => &roles_str);
-    }
+    // TODO: don't know do we need wrap it to tasks.spawn
+    tasks.spawn(tokio::spawn(async move {
+        tcp_receiver
+            .connect("127.0.0.1:3333".parse().unwrap())
+            .unwrap()
+    }));
+
+    // let roles_str = role.to_string();
+    // metric! {
+    //     statsd_count!("ingester.startup", 1, "role" => &roles_str);
+    // }
     match signal::ctrl_c().await {
-        Ok(()) => {}
+        Ok(()) => {
+            info!("Received shutdown signal");
+            tasks.shutdown().await;
+
+            // TODO: the process was not killing after ctrl_c, so I added this here
+            std::process::exit(0);
+        }
         Err(err) => {
             error!("Unable to listen for shutdown signal: {}", err);
             // we also shut down in case of error

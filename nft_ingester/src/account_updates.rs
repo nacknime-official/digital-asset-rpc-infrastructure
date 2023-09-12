@@ -1,14 +1,24 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    net::SocketAddr,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use crate::{
     metric, metrics::capture_result, program_transformers::ProgramTransformer, tasks::TaskData,
+    tcp_receiver::RoutingTcpReceiver,
 };
 use cadence_macros::{is_global_default_set, statsd_count, statsd_time};
 use chrono::Utc;
 use flatbuffers::FlatBufferBuilder;
 use log::{debug, info};
 use plerkle_messenger::ACCOUNT_STREAM;
-use solana_geyser_zmq::flatbuffer::account_data_generated::account_data::root_as_account_data;
+use solana_geyser_zmq::{
+    flatbuffer::account_data_generated::account_data::root_as_account_data, receiver::TcpReceiver,
+};
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
@@ -16,26 +26,23 @@ use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
 pub fn account_worker(
     pool: Pool<Postgres>,
     bg_task_sender: UnboundedSender<TaskData>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
+    receiver: &RoutingTcpReceiver,
+) -> () {
+    let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
-        // TODO: do not create it here, use already created receiver
-        let receiver = solana_geyser_zmq::receiver::TcpReceiver::new(
-            Box::new(move |data| {
-                debug!("Received data: {:?}", data);
+    // TODO: do not create it here, use already created receiver
+    receiver.register_callback(
+        solana_geyser_zmq::flatbuffer::BYTE_PREFIX_ACCOUNT,
+        Box::new(move |data| {
+            debug!("ACCOUNT WORKER DATA RECEIVED {:?}", data);
 
-                let manager_clone = Arc::clone(&manager);
-                // TODO: maybe make the callback itself async?
-                tokio::spawn(async move {
-                    handle_account(manager_clone, data[1..].to_vec()).await;
-                });
-            }),
-            Duration::from_secs(1),
-            Duration::from_secs(1),
-        );
-        receiver.connect("127.0.0.1:3333".parse().unwrap()).unwrap();
-    })
+            let manager_clone = Arc::clone(&manager);
+            // TODO: maybe make the callback itself async?
+            tokio::spawn(async move {
+                handle_account(manager_clone, data).await;
+            });
+        }),
+    );
 
     // commented old code for quick reference.
     // TODO: delete
@@ -130,6 +137,7 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
             &item,
         )
     {
+        debug!("{:?}", account_update);
         let str_program_id = account_update.owner().unwrap();
 
         metric! {
@@ -148,6 +156,7 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
         let account_info_bytes = map_account_info_fb_bytes(account_update);
         let account_info =
             plerkle_serialization::root_as_account_info(account_info_bytes.as_slice()).unwrap();
+        debug!("{:?}", account_info);
 
         let mut account = None;
         if let Some(pubkey) = account_update.pubkey() {
