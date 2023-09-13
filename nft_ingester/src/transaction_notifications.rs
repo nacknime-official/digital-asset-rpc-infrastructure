@@ -12,7 +12,7 @@ use plerkle_messenger::TRANSACTION_STREAM;
 
 use hex::encode;
 use sqlx::{Pool, Postgres};
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
+use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
 
 pub fn transaction_worker(
     pool: Pool<Postgres>,
@@ -29,11 +29,11 @@ pub fn transaction_worker(
 
             let manager_clone = Arc::clone(&manager);
             debug!("before tokio spawn here");
-            futures::executor::block_on(async move {
+            Handle::current().spawn_blocking(|| Handle::current().block_on(async move {
                 debug!("tokio spawn here");
                 handle_transaction(manager_clone, data).await;
                 debug!("after tokio spawn here");
-            });
+            }));
         }),
     );
 }
@@ -219,11 +219,11 @@ pub fn transaction_worker_backfiller(
             let manager_clone = Arc::clone(&manager);
             // TODO: maybe make the callback itself async?
             debug!("before tokio spawn here");
-            tokio::spawn(async move {
+            Handle::current().spawn_blocking(|| Handle::current().block_on(async move {
                 debug!("tokio spawn here");
                 handle_transaction_backfiller(manager_clone, data).await;
                 debug!("after tokio spawn here");
-            });
+            }));
         }),
     );
 }

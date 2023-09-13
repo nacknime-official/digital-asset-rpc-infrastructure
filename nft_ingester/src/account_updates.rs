@@ -21,7 +21,7 @@ use solana_geyser_zmq::{
 };
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
+use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
 
 pub fn account_worker(
     pool: Pool<Postgres>,
@@ -37,7 +37,9 @@ pub fn account_worker(
             debug!("ACCOUNT WORKER DATA RECEIVED {:?}", data);
 
             let manager_clone = Arc::clone(&manager);
-            futures::executor::block_on(async move { handle_account(manager_clone, data).await });
+            Handle::current().spawn_blocking(|| {
+                Handle::current().block_on(async move { handle_account(manager_clone, data).await })
+            });
         }),
     );
 
