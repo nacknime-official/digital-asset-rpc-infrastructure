@@ -150,6 +150,8 @@ pub async fn main() -> Result<(), IngesterError> {
     if role == IngesterRole::Backfiller || role == IngesterRole::All {
         let tcp_sender = Arc::new(TcpSender::new(
             config.get_tcp_sender_backfiller_batch_max_bytes(),
+            false,
+            0,
         ));
         tcp_sender
             .bind(
