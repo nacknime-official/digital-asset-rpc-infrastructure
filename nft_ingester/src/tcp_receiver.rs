@@ -1,28 +1,31 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
     time::Duration,
 };
 
+use log::debug;
 use solana_geyser_zmq::receiver::TcpReceiver;
 
 pub struct RoutingTcpReceiver {
     inner: TcpReceiver,
-    callbacks: Arc<Mutex<HashMap<u8, Box<dyn Fn(Vec<u8>) + Send>>>>,
+    callbacks: Arc<RwLock<HashMap<u8, Box<dyn Fn(Vec<u8>) + Send + Sync>>>>,
 }
 
 impl RoutingTcpReceiver {
     pub fn new(connect_timeout: Duration, reconnect_interval: Duration) -> Self {
-        let callbacks: Arc<Mutex<HashMap<u8, Box<dyn Fn(Vec<u8>) + Send>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let callbacks: Arc<RwLock<HashMap<u8, Box<dyn Fn(Vec<u8>) + Send + Sync>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         let callbacks_clone = Arc::clone(&callbacks);
 
         RoutingTcpReceiver {
             inner: TcpReceiver::new(
                 Box::new(move |data| {
                     let msg_type = data[0];
-                    if let Some(callback) = callbacks_clone.lock().unwrap().get(&msg_type) {
+                    debug!("msg_type: {:?}", msg_type);
+                    let callbacks = callbacks_clone.read().unwrap();
+                    if let Some(callback) = callbacks.get(&msg_type) {
                         callback(data[1..].to_vec());
                     }
                 }),
@@ -33,8 +36,9 @@ impl RoutingTcpReceiver {
         }
     }
 
-    pub fn register_callback(&self, msg_type: u8, callback: Box<dyn Fn(Vec<u8>) + Send>) {
-        self.callbacks.lock().unwrap().insert(msg_type, callback);
+    pub fn register_callback(&self, msg_type: u8, callback: Box<dyn Fn(Vec<u8>) + Send + Sync>) {
+        let mut callbacks = self.callbacks.write().unwrap();
+        callbacks.insert(msg_type, callback);
     }
 
     pub fn connect(&self, addr: SocketAddr) -> std::io::Result<()> {
