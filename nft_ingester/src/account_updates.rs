@@ -37,10 +37,7 @@ pub fn account_worker(
             debug!("ACCOUNT WORKER DATA RECEIVED {:?}", data);
 
             let manager_clone = Arc::clone(&manager);
-            // TODO: maybe make the callback itself async?
-            tokio::spawn(async move {
-                handle_account(manager_clone, data).await;
-            });
+            futures::executor::block_on(async move { handle_account(manager_clone, data).await });
         }),
     );
 

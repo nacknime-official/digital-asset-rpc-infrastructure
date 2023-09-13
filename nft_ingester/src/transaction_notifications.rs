@@ -28,9 +28,8 @@ pub fn transaction_worker(
             debug!("TX WORKER DATA RECEIVED {:?}", data);
 
             let manager_clone = Arc::clone(&manager);
-            // TODO: maybe make the callback itself async?
             debug!("before tokio spawn here");
-            tokio::spawn(async move {
+            futures::executor::block_on(async move {
                 debug!("tokio spawn here");
                 handle_transaction(manager_clone, data).await;
                 debug!("after tokio spawn here");
@@ -203,6 +202,7 @@ async fn handle_transaction(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> 
     }
     ret_id
 }
+
 pub fn transaction_worker_backfiller(
     pool: Pool<Postgres>,
     bg_task_sender: UnboundedSender<TaskData>,
