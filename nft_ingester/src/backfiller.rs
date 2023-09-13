@@ -71,6 +71,7 @@ struct SlotSeq(u64, u64);
 pub fn setup_backfiller(
     pool: Pool<Postgres>,
     config: IngesterConfig,
+    tcp_sender: Arc<TcpSender>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -84,18 +85,20 @@ pub fn setup_backfiller(
             );
             let mut tasks = JoinSet::new();
             let bc = Arc::clone(&block_cache);
+            let sender = Arc::clone(&tcp_sender);
             tasks.spawn(async move {
                 info!("Backfiller filler running");
-                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc).await;
+                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc, sender).await;
                 backfiller.run_filler().await;
             });
 
             let pool_cloned = pool.clone();
             let config_cloned = config.clone();
             let bc = Arc::clone(&block_cache);
+            let sender = Arc::clone(&tcp_sender);
             tasks.spawn(async move {
                 info!("Backfiller finder running");
-                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc).await;
+                let mut backfiller = Backfiller::new(pool_cloned, config_cloned, &bc, sender).await;
                 backfiller.run_finder().await;
             });
 
@@ -186,7 +189,7 @@ struct Backfiller<'a> {
     db: DatabaseConnection,
     rpc_client: RpcClient,
     rpc_block_config: RpcBlockConfig,
-    sender: TcpSender,
+    sender: Arc<TcpSender>,
     failure_delay: u64,
     cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
 }
@@ -197,6 +200,7 @@ impl<'a> Backfiller<'a> {
         pool: Pool<Postgres>,
         config: IngesterConfig,
         cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
+        sender: Arc<TcpSender>,
     ) -> Backfiller<'a> {
         // Create Sea ORM database connection used later for queries.
         let db = SqlxPostgresConnector::from_sqlx_postgres_pool(pool.clone());
@@ -254,9 +258,6 @@ impl<'a> Backfiller<'a> {
         // Instantiate RPC client.
         let rpc_client = RpcClient::new_with_commitment(rpc_url, rpc_commitment);
 
-        // Instantiate sender.
-        let sender = TcpSender::new(2097152);
-
         Self {
             db,
             rpc_client,
@@ -310,7 +311,6 @@ impl<'a> Backfiller<'a> {
     }
     /// Run the backfiller task.
     async fn run_filler(&mut self) {
-        self.sender.bind(3334, 5000).unwrap();
 
         let mut interval =
             time::interval(tokio::time::Duration::from_millis(MAX_BACKFILL_CHECK_WAIT));

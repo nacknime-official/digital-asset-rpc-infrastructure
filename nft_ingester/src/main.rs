@@ -15,7 +15,10 @@ use crate::{
     account_updates::account_worker,
     ack::ack_worker,
     backfiller::setup_backfiller,
-    config::{init_logger, rand_string, setup_config, IngesterRole},
+    config::{
+        init_logger, rand_string, setup_config, IngesterRole, TCP_RECEIVER_CONNECT_TIMEOUT_KEY,
+        TCP_RECEIVER_RECONNECT_INTERVAL,
+    },
     database::setup_database,
     error::IngesterError,
     metrics::setup_metrics,
@@ -32,7 +35,8 @@ use log::{error, info};
 use plerkle_messenger::{
     redis_messenger::RedisMessenger, ConsumptionType, ACCOUNT_STREAM, TRANSACTION_STREAM,
 };
-use std::{path::PathBuf, time};
+use solana_geyser_zmq::sender::TcpSender;
+use std::{path::PathBuf, sync::Arc, time};
 use tokio::{signal, task::JoinSet};
 
 #[tokio::main(flavor = "multi_thread")]
@@ -120,16 +124,19 @@ pub async fn main() -> Result<(), IngesterError> {
 
     // Stream Consumers Setup -------------------------------------
     if role == IngesterRole::Ingester || role == IngesterRole::All {
-        let tcp_receiver =
-            RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
+        let tcp_receiver = RoutingTcpReceiver::new(
+            config.get_tcp_receiver_connect_timeout(false),
+            config.get_tcp_receiver_reconnect_interval(false),
+        );
+
         let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
         let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
+
+        let addr = config.get_tcp_receiver_addr(false);
         // TODO: don't know do we need wrap it to tasks.spawn
-        tasks.spawn(tokio::spawn(async move {
-            tcp_receiver
-                .connect("127.0.0.1:3333".parse().unwrap())
-                .unwrap()
-        }));
+        tasks.spawn(tokio::spawn(
+            async move { tcp_receiver.connect(addr).unwrap() },
+        ));
     }
 
     // Stream Size Timers ----------------------------------------
@@ -141,21 +148,33 @@ pub async fn main() -> Result<(), IngesterError> {
     // }
     // Backfiller Setup ------------------------------------------
     if role == IngesterRole::Backfiller || role == IngesterRole::All {
-        let backfiller = setup_backfiller(database_pool.clone(), config.clone());
+        let tcp_sender = Arc::new(TcpSender::new(
+            config.get_tcp_sender_backfiller_batch_max_bytes(),
+        ));
+        tcp_sender
+            .bind(
+                config.get_tcp_sender_backfiller_port(),
+                config.get_tcp_sender_backfiller_buffer_size(),
+            )
+            .unwrap();
+
+        let backfiller = setup_backfiller(database_pool.clone(), config.clone(), tcp_sender);
         tasks.spawn(backfiller);
 
-        let tcp_receiver =
-            RoutingTcpReceiver::new(time::Duration::from_secs(1), time::Duration::from_secs(1));
+        let tcp_receiver = RoutingTcpReceiver::new(
+            config.get_tcp_receiver_connect_timeout(true),
+            config.get_tcp_receiver_reconnect_interval(true),
+        );
         let _txn = transaction_worker_backfiller(
             database_pool.clone(),
             bg_task_sender.clone(),
             &tcp_receiver,
         );
-        tasks.spawn(tokio::spawn(async move {
-            tcp_receiver
-                .connect("127.0.0.1:3334".parse().unwrap())
-                .unwrap()
-        }));
+
+        let addr = config.get_tcp_receiver_addr(true);
+        tasks.spawn(tokio::spawn(
+            async move { tcp_receiver.connect(addr).unwrap() },
+        ));
     }
 
     // let roles_str = role.to_string();

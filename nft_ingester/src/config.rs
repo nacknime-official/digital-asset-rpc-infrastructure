@@ -1,3 +1,4 @@
+use core::time;
 use figment::{
     providers::{Env, Format, Yaml},
     value::Value,
@@ -9,6 +10,7 @@ use serde::Deserialize;
 use std::{
     env,
     fmt::{Display, Formatter},
+    net::SocketAddr,
     path::PathBuf,
 };
 use tracing_subscriber::fmt;
@@ -19,6 +21,7 @@ use crate::{error::IngesterError, tasks::BackgroundTaskRunnerConfig};
 pub struct IngesterConfig {
     pub database_config: DatabaseConfig,
     pub messenger_config: MessengerConfig,
+    pub tcp_config: TcpConfig,
     pub env: Option<String>,
     pub rpc_config: RpcConfig,
     pub metrics_port: Option<u16>,
@@ -69,6 +72,93 @@ impl IngesterConfig {
     pub fn get_transaction_stream_worker_count(&self) -> u32 {
         self.transaction_stream_worker_count.unwrap_or(2)
     }
+
+    pub fn get_tcp_receiver_connect_timeout(&self, backfiller: bool) -> time::Duration {
+        let key = match backfiller {
+            false => TCP_RECEIVER_CONNECT_TIMEOUT_KEY,
+            true => TCP_RECEIVER_BACKFILLER_CONNECT_TIMEOUT_KEY,
+        };
+        time::Duration::from_secs(
+            self.tcp_config
+                .get(key)
+                .and_then(|a| a.to_u128())
+                .ok_or(IngesterError::ConfigurationError {
+                    msg: format!("TCP receiver connect timeout missing: {}", key),
+                })
+                .unwrap() as u64,
+        )
+    }
+
+    pub fn get_tcp_receiver_reconnect_interval(&self, backfiller: bool) -> time::Duration {
+        let key = match backfiller {
+            false => TCP_RECEIVER_RECONNECT_INTERVAL,
+            true => TCP_RECEIVER_BACKFILLER_RECONNECT_INTERVAL,
+        };
+        time::Duration::from_secs(
+            self.tcp_config
+                .get(key)
+                .and_then(|a| a.to_u128())
+                .ok_or(IngesterError::ConfigurationError {
+                    msg: format!("TCP receiver reconnect interval missing: {}", key),
+                })
+                .unwrap() as u64,
+        )
+    }
+
+    pub fn get_tcp_receiver_addr(&self, backfiller: bool) -> SocketAddr {
+        let key = match backfiller {
+            false => TCP_RECEIVER_ADDR,
+            true => TCP_RECEIVER_BACKFILLER_ADDR,
+        };
+        self.tcp_config
+            .get(key)
+            .and_then(|a| a.as_str())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("TCP receiver address missing: {}", key),
+            })
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    pub fn get_tcp_sender_backfiller_port(&self) -> u16 {
+        self.tcp_config
+            .get(TCP_SENDER_BACKFILLER_PORT)
+            .and_then(|a| a.to_u128())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!(
+                    "TCP sender port for backfiller missing: {}",
+                    TCP_SENDER_BACKFILLER_PORT
+                ),
+            })
+            .unwrap() as u16
+    }
+
+    pub fn get_tcp_sender_backfiller_buffer_size(&self) -> usize {
+        self.tcp_config
+            .get(TCP_SENDER_BACKFILLER_BUFFER_SIZE)
+            .and_then(|a| a.to_u128())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!(
+                    "TCP sender buffer size for backfiller missing: {}",
+                    TCP_SENDER_BACKFILLER_BUFFER_SIZE
+                ),
+            })
+            .unwrap() as usize
+    }
+
+    pub fn get_tcp_sender_backfiller_batch_max_bytes(&self) -> usize {
+        self.tcp_config
+            .get(TCP_SENDER_BACKFILLER_BATCH_MAX_BYTES)
+            .and_then(|a| a.to_u128())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!(
+                    "TCP sender batch max bytes for backfiller missing: {}",
+                    TCP_SENDER_BACKFILLER_BATCH_MAX_BYTES
+                ),
+            })
+            .unwrap() as usize
+    }
 }
 
 // Types and constants used for Figment configuration items.
@@ -82,6 +172,19 @@ pub type RpcConfig = figment::value::Dict;
 pub const RPC_URL_KEY: &str = "url";
 pub const RPC_COMMITMENT_KEY: &str = "commitment";
 pub const CODE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub type TcpConfig = figment::value::Dict;
+
+pub const TCP_RECEIVER_ADDR: &str = "receiver_addr";
+pub const TCP_RECEIVER_CONNECT_TIMEOUT_KEY: &str = "receiver_connect_timeout";
+pub const TCP_RECEIVER_RECONNECT_INTERVAL: &str = "receiver_reconnect_interval";
+
+pub const TCP_RECEIVER_BACKFILLER_ADDR: &str = "backfiller_receiver_addr";
+pub const TCP_RECEIVER_BACKFILLER_CONNECT_TIMEOUT_KEY: &str = "backfiller_receiver_connect_timeout";
+pub const TCP_RECEIVER_BACKFILLER_RECONNECT_INTERVAL: &str = "backfiller_receiver_reconnect_interval";
+pub const TCP_SENDER_BACKFILLER_PORT: &str = "backfiller_sender_port";
+pub const TCP_SENDER_BACKFILLER_BATCH_MAX_BYTES: &str = "backfiller_sender_batch_max_bytes";
+pub const TCP_SENDER_BACKFILLER_BUFFER_SIZE: &str = "backfiller_sender_buffer_size";
 
 #[derive(Deserialize, PartialEq, Eq, Debug, Clone)]
 pub enum IngesterRole {
