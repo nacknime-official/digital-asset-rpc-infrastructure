@@ -1,11 +1,4 @@
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    net::SocketAddr,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{str::FromStr, sync::Arc};
 
 use crate::{
     metric, metrics::capture_result, program_transformers::ProgramTransformer, tasks::TaskData,
@@ -14,14 +7,12 @@ use crate::{
 use cadence_macros::{is_global_default_set, statsd_count, statsd_time};
 use chrono::Utc;
 use flatbuffers::FlatBufferBuilder;
-use log::{debug, info};
+use log::debug;
 use plerkle_messenger::ACCOUNT_STREAM;
-use solana_geyser_zmq::{
-    flatbuffer::account_data_generated::account_data::root_as_account_data, receiver::TcpReceiver,
-};
+use solana_geyser_zmq::flatbuffer::account_data_generated::account_data::root_as_account_data;
 use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
-use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
+use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, time::Instant};
 
 pub fn account_worker(
     pool: Pool<Postgres>,
@@ -30,11 +21,10 @@ pub fn account_worker(
 ) -> () {
     let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
-    // TODO: do not create it here, use already created receiver
     receiver.register_callback(
         solana_geyser_zmq::flatbuffer::BYTE_PREFIX_ACCOUNT,
         Box::new(move |data| {
-            debug!("ACCOUNT WORKER DATA RECEIVED {:?}", data);
+            debug!("ACCOUNT WORKER DATA RECEIVED");
 
             let manager_clone = Arc::clone(&manager);
             Handle::current().spawn_blocking(|| {
@@ -136,7 +126,6 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
             &item,
         )
     {
-        debug!("{:?}", account_update);
         let str_program_id = account_update.owner().unwrap();
 
         metric! {
@@ -155,7 +144,6 @@ async fn handle_account(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> Opti
         let account_info_bytes = map_account_info_fb_bytes(account_update);
         let account_info =
             plerkle_serialization::root_as_account_info(account_info_bytes.as_slice()).unwrap();
-        debug!("{:?}", account_info);
 
         let mut account = None;
         if let Some(pubkey) = account_update.pubkey() {

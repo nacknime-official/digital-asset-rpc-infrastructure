@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use crate::{
     metric, metrics::capture_result, program_transformers::ProgramTransformer, tasks::TaskData,
@@ -10,9 +10,8 @@ use flatbuffers::FlatBufferBuilder;
 use log::debug;
 use plerkle_messenger::TRANSACTION_STREAM;
 
-use hex::encode;
 use sqlx::{Pool, Postgres};
-use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, task::JoinHandle, time::Instant};
+use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, time::Instant};
 
 pub fn transaction_worker(
     pool: Pool<Postgres>,
@@ -21,19 +20,17 @@ pub fn transaction_worker(
 ) -> () {
     let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
-    // TODO: do not create it here, use already created receiver
     receiver.register_callback(
         solana_geyser_zmq::flatbuffer::BYTE_PREFIX_TX,
         Box::new(move |data| {
-            debug!("TX WORKER DATA RECEIVED {:?}", data);
+            debug!("TX WORKER DATA RECEIVED");
 
             let manager_clone = Arc::clone(&manager);
-            debug!("before tokio spawn here");
-            Handle::current().spawn_blocking(|| Handle::current().block_on(async move {
-                debug!("tokio spawn here");
-                handle_transaction(manager_clone, data).await;
-                debug!("after tokio spawn here");
-            }));
+            Handle::current().spawn_blocking(|| {
+                Handle::current().block_on(async move {
+                    handle_transaction(manager_clone, data).await;
+                })
+            });
         }),
     );
 }
@@ -43,7 +40,6 @@ async fn handle_transaction(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> 
     let mut ret_id = None;
 
     if let Ok(tx) = solana_geyser_zmq::flatbuffer::transaction_info_generated::transaction_info::root_as_transaction_info(&item) {
-        debug!("{:?}",tx);
         let signature = tx.signature_string().unwrap_or("NO SIG");
         debug!("Received transaction: {}", signature);
         metric! {
@@ -182,8 +178,6 @@ async fn handle_transaction(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> 
         builder.finish(transaction_info_wip, None);
         let transaction_info = plerkle_serialization::root_as_transaction_info(builder.finished_data()).unwrap();
 
-        debug!("{:?}",transaction_info);
-
         let begin = Instant::now();
         let res = manager.handle_transaction(&transaction_info).await;
         let should_ack = capture_result(
@@ -210,20 +204,17 @@ pub fn transaction_worker_backfiller(
 ) -> () {
     let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
-    // TODO: do not create it here, use already created receiver
     receiver.register_callback(
         solana_geyser_zmq::flatbuffer::BYTE_PREFIX_TX,
         Box::new(move |data| {
             debug!("TX WORKER BACKFILLER DATA RECEIVED {:?}", data);
 
             let manager_clone = Arc::clone(&manager);
-            // TODO: maybe make the callback itself async?
-            debug!("before tokio spawn here");
-            Handle::current().spawn_blocking(|| Handle::current().block_on(async move {
-                debug!("tokio spawn here");
-                handle_transaction_backfiller(manager_clone, data).await;
-                debug!("after tokio spawn here");
-            }));
+            Handle::current().spawn_blocking(|| {
+                Handle::current().block_on(async move {
+                    handle_transaction_backfiller(manager_clone, data).await;
+                })
+            });
         }),
     );
 }

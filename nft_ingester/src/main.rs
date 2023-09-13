@@ -13,16 +13,11 @@ mod transaction_notifications;
 
 use crate::{
     account_updates::account_worker,
-    ack::ack_worker,
     backfiller::setup_backfiller,
-    config::{
-        init_logger, rand_string, setup_config, IngesterRole, TCP_RECEIVER_CONNECT_TIMEOUT_KEY,
-        TCP_RECEIVER_RECONNECT_INTERVAL,
-    },
+    config::{init_logger, rand_string, setup_config, IngesterRole},
     database::setup_database,
     error::IngesterError,
     metrics::setup_metrics,
-    stream::StreamSizeTimer,
     tasks::{BgTask, DownloadMetadataTask, TaskManager},
     tcp_receiver::RoutingTcpReceiver,
     transaction_notifications::transaction_worker,
@@ -32,9 +27,6 @@ use cadence_macros::{is_global_default_set, statsd_count};
 use chrono::Duration;
 use clap::{arg, command, value_parser};
 use log::{error, info};
-use plerkle_messenger::{
-    redis_messenger::RedisMessenger, ConsumptionType, ACCOUNT_STREAM, TRANSACTION_STREAM,
-};
 use solana_geyser_zmq::sender::TcpSender;
 use std::{path::PathBuf, sync::Arc, time};
 use tokio::{signal, task::JoinSet};
@@ -179,10 +171,10 @@ pub async fn main() -> Result<(), IngesterError> {
         ));
     }
 
-    // let roles_str = role.to_string();
-    // metric! {
-    //     statsd_count!("ingester.startup", 1, "role" => &roles_str);
-    // }
+    let roles_str = role.to_string();
+    metric! {
+        statsd_count!("ingester.startup", 1, "role" => &roles_str);
+    }
     match signal::ctrl_c().await {
         Ok(()) => {
             info!("Received shutdown signal");
