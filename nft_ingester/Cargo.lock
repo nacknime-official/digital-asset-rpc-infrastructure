@@ -2787,7 +2787,7 @@ dependencies = [
  "solana-account-decoder",
  "solana-client",
  "solana-geyser-plugin-interface",
- "solana-geyser-plugin-scaffold",
+ "solana-geyser-zmq",
  "solana-sdk",
  "solana-sdk-macro",
  "solana-transaction-status",
@@ -4776,8 +4776,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "solana-geyser-plugin-scaffold"
-version = "1.11.2"
+name = "solana-geyser-zmq"
+version = "0.1.8"
+source = "git+https://github.com/extrnode/solana-geyser-zmq?branch=feat/adapt-plugin-for-ingester#4a8aee93b9e005dd6dead4150a0519c4829bd0b4"
 dependencies = [
  "anyhow",
  "bincode",
