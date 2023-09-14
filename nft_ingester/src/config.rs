@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::{
     env,
     fmt::{Display, Formatter},
-    net::SocketAddr,
+    net::{SocketAddr, ToSocketAddrs},
     path::PathBuf,
 };
 use tracing_subscriber::fmt;
@@ -117,7 +117,9 @@ impl IngesterConfig {
                 msg: format!("TCP receiver address missing: {}", key),
             })
             .unwrap()
-            .parse()
+            .to_socket_addrs()
+            .unwrap()
+            .next()
             .unwrap()
     }
 
@@ -181,7 +183,8 @@ pub const TCP_RECEIVER_RECONNECT_INTERVAL: &str = "receiver_reconnect_interval";
 
 pub const TCP_RECEIVER_BACKFILLER_ADDR: &str = "backfiller_receiver_addr";
 pub const TCP_RECEIVER_BACKFILLER_CONNECT_TIMEOUT_KEY: &str = "backfiller_receiver_connect_timeout";
-pub const TCP_RECEIVER_BACKFILLER_RECONNECT_INTERVAL: &str = "backfiller_receiver_reconnect_interval";
+pub const TCP_RECEIVER_BACKFILLER_RECONNECT_INTERVAL: &str =
+    "backfiller_receiver_reconnect_interval";
 pub const TCP_SENDER_BACKFILLER_PORT: &str = "backfiller_sender_port";
 pub const TCP_SENDER_BACKFILLER_BATCH_MAX_BYTES: &str = "backfiller_sender_batch_max_bytes";
 pub const TCP_SENDER_BACKFILLER_BUFFER_SIZE: &str = "backfiller_sender_buffer_size";
