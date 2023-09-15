@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
 use crate::{
     metric, metrics::capture_result, program_transformers::ProgramTransformer, tasks::TaskData,
@@ -10,6 +10,7 @@ use flatbuffers::FlatBufferBuilder;
 use log::debug;
 use plerkle_messenger::TRANSACTION_STREAM;
 
+use solana_sdk::pubkey::Pubkey;
 use sqlx::{Pool, Postgres};
 use tokio::{runtime::Handle, sync::mpsc::UnboundedSender, time::Instant};
 
@@ -65,31 +66,10 @@ async fn handle_transaction(manager: Arc<ProgramTransformer>, item: Vec<u8>) -> 
             solana_sdk::message::VersionedMessage::V0(_) => plerkle_serialization::TransactionVersion::V0,
         };
 
-        let account_keys = {
-            let mut account_keys_fb_vec = vec![];
-            for key in tx.account_keys().iter() {
-                let pubkey = plerkle_serialization::Pubkey(key.bytes().try_into().unwrap());
-                account_keys_fb_vec.push(pubkey);
-            }
-
-            if let Some(loaded_addr) = tx.loaded_addresses_string() {
-                for i in loaded_addr.writable().iter() {
-                    let pubkey = plerkle_serialization::Pubkey(i.bytes().try_into().unwrap());
-                    account_keys_fb_vec.push(pubkey);
-                }
-
-                for i in loaded_addr.readonly().iter() {
-                    let pubkey = plerkle_serialization::Pubkey(i.bytes().try_into().unwrap());
-                    account_keys_fb_vec.push(pubkey);
-                }
-            }
-
-            if !account_keys_fb_vec.is_empty() {
-                Some(builder.create_vector(&account_keys_fb_vec))
-            } else {
-                None
-            }
-        };
+        let account_keys = tx.account_keys_string().map(|keys| {
+            let mapped = keys.iter().map(|key| plerkle_serialization::Pubkey(Pubkey::from_str(key).unwrap().to_bytes())).collect::<Vec<_>>();
+            builder.create_vector(&mapped)
+        });
 
         let log_messages = tx.transaction_meta().and_then(|meta| meta.log_messages()).map(|msgs| {
             let mapped = msgs.iter().map(|msg| builder.create_string(msg) ).collect::<Vec<_>>();
