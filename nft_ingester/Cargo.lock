@@ -4778,7 +4778,7 @@ dependencies = [
 [[package]]
 name = "solana-geyser-zmq"
 version = "0.1.8"
-source = "git+https://github.com/extrnode/solana-geyser-zmq?branch=feat/adapt-plugin-for-ingester#4a8aee93b9e005dd6dead4150a0519c4829bd0b4"
+source = "git+https://github.com/extrnode/solana-geyser-zmq?branch=feat/adapt-plugin-for-ingester#e520030110e35fa106a2aa367561cfeed5a999ae"
 dependencies = [
  "anyhow",
  "bincode",
