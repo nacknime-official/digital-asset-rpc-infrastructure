@@ -129,12 +129,12 @@ pub async fn main() -> Result<(), IngesterError> {
             config.get_tcp_receiver_reconnect_interval(false),
         );
 
-        let _account = account_worker(
-            database_pool.clone(),
-            bg_task_sender.clone(),
-            &tcp_receiver,
-            Arc::clone(&runtime),
-        );
+        // let _account = account_worker(
+        //     database_pool.clone(),
+        //     bg_task_sender.clone(),
+        //     &tcp_receiver,
+        //     Arc::clone(&runtime),
+        // );
         let _txn = transaction_worker(
             database_pool.clone(),
             bg_task_sender.clone(),
