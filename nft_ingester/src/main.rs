@@ -121,8 +121,15 @@ pub async fn main() -> Result<(), IngesterError> {
             config.get_tcp_receiver_reconnect_interval(false),
         );
 
-        let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
-        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver);
+        let runtime = Arc::new(tokio::runtime::Builder::new_current_thread()
+            .thread_name("workers")
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap());
+        let runtime_clone = Arc::clone(&runtime);
+        let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver, runtime);
+        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver, runtime_clone);
 
         let addr = config.get_tcp_receiver_addr(false);
         // TODO: don't know do we need wrap it to tasks.spawn
