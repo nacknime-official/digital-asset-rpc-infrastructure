@@ -23,7 +23,6 @@ services:
       - migrator
       - db
       - graphite
-      - solana
     restart: always
     environment:
       RUST_LOG: debug
