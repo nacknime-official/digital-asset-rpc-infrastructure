@@ -18,6 +18,7 @@ pub fn account_worker(
     pool: Pool<Postgres>,
     bg_task_sender: UnboundedSender<TaskData>,
     receiver: &RoutingTcpReceiver,
+    runtime: Arc<tokio::runtime::Runtime>,
 ) -> () {
     let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
@@ -27,8 +28,13 @@ pub fn account_worker(
             debug!("ACCOUNT WORKER DATA RECEIVED");
 
             let manager_clone = Arc::clone(&manager);
-            Handle::current().spawn_blocking(|| {
-                Handle::current().block_on(async move { handle_account(manager_clone, data).await })
+            let runtime_clone = Arc::clone(&runtime);
+            tokio::task::block_in_place(move || {
+                runtime_clone.block_on(async move {
+                    // debug!("sleep 10sec");
+                    // tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    handle_account(manager_clone, data).await
+                })
             });
         }),
     );
