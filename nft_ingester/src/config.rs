@@ -24,6 +24,7 @@ pub struct IngesterConfig {
     pub tcp_config: TcpConfig,
     pub env: Option<String>,
     pub rpc_config: RpcConfig,
+    pub big_table_config: BigTableConfig,
     pub metrics_port: Option<u16>,
     pub metrics_host: Option<String>,
     pub backfiller: Option<bool>,
@@ -170,10 +171,15 @@ pub const DATABASE_URL_KEY: &str = "url";
 pub const DATABASE_LISTENER_CHANNEL_KEY: &str = "listener_channel";
 
 pub type RpcConfig = figment::value::Dict;
+pub type BigTableConfig = figment::value::Dict;
 
 pub const RPC_URL_KEY: &str = "url";
 pub const RPC_COMMITMENT_KEY: &str = "commitment";
 pub const CODE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const RPC_TIMEOUT_KEY: &str = "timeout";
+
+pub const BIG_TABLE_CREDS_KEY: &str = "creds";
+pub const BIG_TABLE_TIMEOUT_KEY: &str = "timeout";
 
 pub type TcpConfig = figment::value::Dict;
 

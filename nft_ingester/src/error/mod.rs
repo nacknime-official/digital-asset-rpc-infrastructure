@@ -54,6 +54,12 @@ pub enum IngesterError {
     AssetIndexError(String),
     #[error("Backfill sender error: {0}")]
     BackfillSenderError(String),
+    #[error("Slot doesn't have tree signatures {0}")]
+    SlotDoesntHaveTreeSignatures(String),
+    #[error("DB error {0}")]
+    DbError(String),
+    #[error("Error getting data from BigTable {0}")]
+    BigTableError(String),
 }
 
 impl From<reqwest::Error> for IngesterError {

@@ -31,7 +31,7 @@ use solana_sdk::{
 };
 use solana_transaction_status::{
     option_serializer::OptionSerializer, EncodedConfirmedBlock,
-    EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding,
+    EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding, ConfirmedBlock,
 };
 use spl_account_compression::state::{
     merkle_tree_get_size, ConcurrentMerkleTreeHeader, CONCURRENT_MERKLE_TREE_HEADER_SIZE_V1,
@@ -49,9 +49,10 @@ use tokio::{
     task::JoinSet,
     time::{self, sleep, Duration},
 };
+use solana_storage_bigtable::LedgerStorage;
 
 use crate::{
-    config::{IngesterConfig, DATABASE_LISTENER_CHANNEL_KEY, RPC_COMMITMENT_KEY, RPC_URL_KEY},
+    config::{IngesterConfig, DATABASE_LISTENER_CHANNEL_KEY, RPC_COMMITMENT_KEY, RPC_URL_KEY, BIG_TABLE_CREDS_KEY, BIG_TABLE_TIMEOUT_KEY, RPC_TIMEOUT_KEY},
     error::IngesterError,
     metric,
 };
@@ -188,10 +189,11 @@ impl GapInfo {
 struct Backfiller<'a> {
     db: DatabaseConnection,
     rpc_client: RpcClient,
+    big_table_client: LedgerStorage,
     rpc_block_config: RpcBlockConfig,
     sender: Arc<TcpSender>,
     failure_delay: u64,
-    cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
+    cache: &'a AsyncCache<String, ConfirmedBlock>,
 }
 
 impl<'a> Backfiller<'a> {
@@ -199,7 +201,7 @@ impl<'a> Backfiller<'a> {
     async fn new(
         pool: Pool<Postgres>,
         config: IngesterConfig,
-        cache: &'a AsyncCache<String, EncodedConfirmedBlock>,
+        cache: &'a AsyncCache<String, ConfirmedBlock>,
         sender: Arc<TcpSender>,
     ) -> Backfiller<'a> {
         // Create Sea ORM database connection used later for queries.
@@ -255,12 +257,58 @@ impl<'a> Backfiller<'a> {
             ..RpcBlockConfig::default()
         };
 
+        let rpc_timeout = config.rpc_config.get(RPC_TIMEOUT_KEY)
+            .and_then(|v| v.to_num())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("RPC timeout missing: {}", RPC_TIMEOUT_KEY),
+            })
+            .unwrap()
+            .to_u32()
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("RPC timeout invalid: {}", RPC_TIMEOUT_KEY),
+            })
+            .unwrap();
+
         // Instantiate RPC client.
-        let rpc_client = RpcClient::new_with_commitment(rpc_url, rpc_commitment);
+        let rpc_client =
+            RpcClient::new_with_timeout(rpc_url, Duration::from_secs(rpc_timeout as u64));
+
+        let big_table_creds = config
+            .big_table_config
+            .get(BIG_TABLE_CREDS_KEY)
+            .and_then(|v| v.as_str())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("big table creds are missing: {}", BIG_TABLE_CREDS_KEY),
+            })
+            .unwrap();
+
+        let big_table_timeout = config
+            .rpc_config
+            .get(BIG_TABLE_TIMEOUT_KEY)
+            .and_then(|v| v.to_num())
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("big table timeout missing: {}", BIG_TABLE_TIMEOUT_KEY),
+            })
+            .unwrap()
+            .to_u32()
+            .ok_or(IngesterError::ConfigurationError {
+                msg: format!("big table timeout invalid: {}", BIG_TABLE_TIMEOUT_KEY),
+            })
+            .unwrap();
+
+        // Instantiate big table client.
+        let big_table_client = LedgerStorage::new(
+            true,
+            Some(Duration::from_secs(big_table_timeout as u64)),
+            Some(big_table_creds.to_string()),
+        )
+            .await
+            .unwrap();
 
         Self {
             db,
             rpc_client,
+            big_table_client,
             rpc_block_config,
             sender,
             failure_delay: INITIAL_FAILURE_DELAY,
@@ -601,19 +649,7 @@ impl<'a> Backfiller<'a> {
         let address = Pubkey::new(btree.unique_tree.tree.as_slice());
         let slots = self.find_slots_via_address(&address).await?;
         let address = btree.unique_tree.tree.clone();
-        for slot in slots {
-            let gap = GapInfo {
-                prev: SimpleBackfillItem {
-                    seq: 0,
-                    slot: slot as i64,
-                },
-                curr: SimpleBackfillItem {
-                    seq: 0,
-                    slot: slot as i64,
-                },
-            };
-            self.plug_gap(&gap, &address).await?;
-        }
+        self.plug_gap(&slots, &address).await?;
         Ok(Some(0))
     }
 
@@ -628,15 +664,8 @@ impl<'a> Backfiller<'a> {
         loop {
             let before = last_sig;
             let sigs = self
-                .rpc_client
-                .get_signatures_for_address_with_config(
-                    address,
-                    GetConfirmedSignaturesForAddress2Config {
-                        before,
-                        until: None,
-                        ..GetConfirmedSignaturesForAddress2Config::default()
-                    },
-                )
+                .big_table_client
+                .get_confirmed_signatures_for_address(address, before.as_ref(), None, 1000)
                 .await
                 .map_err(|e| {
                     IngesterError::RpcGetDataError(format!(
@@ -645,16 +674,10 @@ impl<'a> Backfiller<'a> {
                     ))
                 })?;
             for sig in sigs.iter() {
-                let slot = sig.slot;
-                let sig = Signature::from_str(&sig.signature).map_err(|e| {
-                    IngesterError::RpcDataUnsupportedFormat(format!(
-                        "Failed to parse signature {}",
-                        e
-                    ))
-                })?;
+                let slot = sig.0.slot;
 
                 slots.insert(slot);
-                last_sig = Some(sig);
+                last_sig = Some(sig.0.signature);
             }
             if sigs.is_empty() || sigs.len() < 1000 {
                 break;
@@ -734,17 +757,99 @@ impl<'a> Backfiller<'a> {
     async fn fetch_and_plug_gaps(&mut self, tree: &[u8]) -> Result<Option<i64>, IngesterError> {
         let (opt_max_seq, gaps) = self.get_missing_data(tree).await?;
 
-        // Similar to `plugGapsBatched()` in `backfiller.ts` (although not batched).
-        for gap in gaps.iter() {
-            // Similar to `plugGaps()` in `backfiller.ts`.
-            self.plug_gap(gap, tree).await?;
-        }
+        self.plug_gap(&gaps, tree).await?;
 
         Ok(opt_max_seq)
     }
 
+    async fn get_trees_signature(
+        &self,
+        tree: &[u8],
+        slot: &u64,
+    ) -> Result<Signature, IngesterError> {
+        let block = self
+            .big_table_client
+            .get_confirmed_block(*slot)
+            .await
+            .map_err(|e| IngesterError::RpcGetDataError(e.to_string()))?;
+
+        let cost = cmp::min(32, block.transactions.len() as i64);
+        let key = format!("block{}", slot);
+
+        let write = self
+            .cache
+            .try_insert_with_ttl(
+                key.clone(),
+                block.clone(),
+                cost,
+                Duration::from_secs(BLOCK_CACHE_DURATION),
+            )
+            .await
+            .map_err(|e| IngesterError::CacheStorageWriteError(e.to_string()))?;
+
+        if !write {
+            return Err(IngesterError::CacheStorageWriteError(
+                "Failed to write to cache. Method - get_trees_signature()".to_string(),
+            ));
+        }
+
+        self.cache.wait().await.unwrap();
+
+        // get transactions
+        for tx in block.transactions.iter() {
+            let meta = if let Some(meta) = tx.get_status_meta() {
+                if let Err(err) = meta.status {
+                    continue;
+                }
+                meta
+            } else {
+                continue;
+            };
+
+            let decoded_tx = tx.get_transaction();
+
+            let msg = decoded_tx.message;
+
+            let atl_keys = msg.address_table_lookups();
+
+            let account_keys = msg.static_account_keys();
+            let account_keys = {
+                let mut account_keys_vec = vec![];
+                for key in account_keys.iter() {
+                    account_keys_vec.push(key.to_bytes());
+                }
+                if atl_keys.is_some() {
+                    let ad = meta.loaded_addresses;
+
+                    for i in &ad.writable {
+                        account_keys_vec.push(i.to_bytes());
+                    }
+
+                    for i in &ad.readonly {
+                        account_keys_vec.push(i.to_bytes());
+                    }
+                }
+                account_keys_vec
+            };
+
+            let bubblegum = blockbuster::programs::bubblegum::program_id().to_bytes();
+            if account_keys
+                .iter()
+                .all(|pk| *pk == tree || *pk == bubblegum)
+            {
+                return Ok(decoded_tx.signatures[0]);
+            }
+        }
+
+        let tree_pubkey = Pubkey::try_from_slice(tree).unwrap();
+
+        Err(IngesterError::SlotDoesntHaveTreeSignatures(
+            tree_pubkey.to_string(),
+        ))
+    }
+
     // Similar to `getMissingData()` in `db.ts`.
-    async fn get_missing_data(&self, tree: &[u8]) -> Result<(Option<i64>, Vec<GapInfo>), DbErr> {
+    async fn get_missing_data(&self, tree: &[u8]) -> Result<(Option<i64>, Vec<u64>), IngesterError> {
         // Get the maximum sequence number that has been backfilled, and use
         // that for the starting sequence number for backfilling.
         let query = backfill_items::Entity::find()
@@ -793,58 +898,72 @@ impl<'a> Backfiller<'a> {
                     prev.slot, curr.slot
                 );
                 error!("{}", message);
-                return Err(DbErr::Custom(message));
+                return Err(IngesterError::DbError(message));
             } else if curr.seq - prev.seq > 1 {
-                gaps.push(GapInfo::new(prev.clone(), curr.clone()));
+                gaps.push((prev.slot as u64, curr.slot as u64));
+            }
+        }
+
+        let mut signatures = Vec::new();
+
+        for (start, end) in gaps.iter() {
+            let signature_from = self.get_trees_signature(tree, start).await?;
+
+            let signature_to = self.get_trees_signature(tree, end).await?;
+
+            signatures.push((signature_from, signature_to));
+        }
+
+        let mut slots = Vec::new();
+
+        let tree_pubkey = Pubkey::try_from_slice(tree).unwrap();
+
+        for (sig_start, sig_end) in signatures.iter() {
+            loop {
+                let sigs = self
+                    .big_table_client
+                    .get_confirmed_signatures_for_address(
+                        &tree_pubkey,
+                        Some(sig_end),
+                        Some(sig_start),
+                        1000,
+                    )
+                    .await
+                    .map_err(|e| {
+                        IngesterError::BigTableError(format!(
+                            "GetSignaturesForAddress failed {}",
+                            e
+                        ))
+                    })?;
+
+                for sig in sigs.iter() {
+                    let slot = sig.0.slot;
+                    slots.push(slot);
+                }
+
+                if sigs.is_empty() || sigs.len() < 1000 {
+                    break;
+                }
             }
         }
 
         // Get the max sequence number if any rows were returned from the query.
         let opt_max_seq = rows.last().map(|row| row.seq);
 
-        Ok((opt_max_seq, gaps))
+        Ok((opt_max_seq, slots))
     }
 
-    async fn plug_gap(&mut self, gap: &GapInfo, tree: &[u8]) -> Result<(), IngesterError> {
-        // TODO: This needs to make sure all slots are available otherwise it will partially
-        // fail and redo the whole backfill process.  So for now checking the max block before
-        // looping as a quick workaround.
-        let diff = gap.curr.slot - gap.prev.slot;
-        let mut num_iter = (diff + 250_000) / 500_000;
-        let mut start_slot = gap.prev.slot;
-        let mut end_slot = gap.prev.slot + cmp::min(500_000, diff);
-        let get_confirmed_slot_tasks = FuturesUnordered::new();
-        if num_iter == 0 {
-            num_iter = 1;
-        }
-        for _ in 0..num_iter {
-            get_confirmed_slot_tasks.push(self.rpc_client.get_blocks_with_commitment(
-                start_slot as u64,
-                Some(end_slot as u64),
-                CommitmentConfig {
-                    commitment: CommitmentLevel::Confirmed,
-                },
-            ));
-            start_slot = end_slot;
-            end_slot = cmp::min(end_slot + 500_000, gap.curr.slot);
-        }
-        let result_slots = get_confirmed_slot_tasks
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(|x| x.ok())
-            .flatten();
-        for slot in result_slots {
+    async fn plug_gap(&mut self, slots: &Vec<u64>, tree: &[u8]) -> Result<(), IngesterError> {
+        for slot in slots {
             let key = format!("block{}", slot);
             let mut cached_block = self.cache.get(&key);
             if cached_block.is_none() {
                 debug!("Fetching block {} from RPC", slot);
-                let block = EncodedConfirmedBlock::from(
-                    self.rpc_client
-                        .get_block_with_config(slot as u64, self.rpc_block_config)
-                        .await
-                        .map_err(|e| IngesterError::RpcGetDataError(e.to_string()))?,
-                );
+                let block = self
+                    .big_table_client
+                    .get_confirmed_block(*slot)
+                    .await
+                    .map_err(|e| IngesterError::BigTableError(e.to_string()))?;
                 let cost = cmp::min(32, block.transactions.len() as i64);
                 let write = self
                     .cache
@@ -876,8 +995,8 @@ impl<'a> Backfiller<'a> {
 
             for tx in block_data.transactions.iter() {
                 // See if transaction has an error.
-                let meta = if let Some(meta) = &tx.meta {
-                    if let Some(_err) = &meta.err {
+                let meta = if let Some(meta) = tx.get_status_meta() {
+                    if let Err(_err) = meta.status {
                         continue;
                     }
                     meta
@@ -885,12 +1004,7 @@ impl<'a> Backfiller<'a> {
                     error!("Unexpected, EncodedTransactionWithStatusMeta struct has no metadata");
                     continue;
                 };
-                let decoded_tx = if let Some(decoded_tx) = tx.transaction.decode() {
-                    decoded_tx
-                } else {
-                    error!("Unable to decode transaction");
-                    continue;
-                };
+                let decoded_tx = tx.get_transaction();
                 let sig = decoded_tx.signatures[0].to_string();
                 let msg = decoded_tx.message;
                 let atl_keys = msg.address_table_lookups();
@@ -903,22 +1017,14 @@ impl<'a> Backfiller<'a> {
                         account_keys_vec.push(key.to_bytes());
                     }
                     if atl_keys.is_some() {
-                        if let OptionSerializer::Some(ad) = &meta.loaded_addresses {
-                            for i in &ad.writable {
-                                let mut output: [u8; 32] = [0; 32];
-                                bs58::decode(i).into(&mut output).map_err(|e| {
-                                    IngesterError::DeserializationError(e.to_string())
-                                })?;
-                                account_keys_vec.push(output);
-                            }
+                        let ad = meta.loaded_addresses;
 
-                            for i in &ad.readonly {
-                                let mut output: [u8; 32] = [0; 32];
-                                bs58::decode(i).into(&mut output).map_err(|e| {
-                                    IngesterError::DeserializationError(e.to_string())
-                                })?;
-                                account_keys_vec.push(output);
-                            }
+                        for i in &ad.writable {
+                            account_keys_vec.push(i.to_bytes());
+                        }
+
+                        for i in &ad.readonly {
+                            account_keys_vec.push(i.to_bytes());
                         }
                     }
                     account_keys_vec
@@ -935,9 +1041,14 @@ impl<'a> Backfiller<'a> {
                 // Serialize data.
                 let builder = FlatBufferBuilder::new();
                 debug!("Serializing transaction in backfiller {}", sig);
+                // tx version 0 to support transactions with address lookup table
+                let encoded_tx = tx
+                    .clone()
+                    .encode(UiTransactionEncoding::Base58, Some(0), false)
+                    .unwrap();
                 let tx_wrap = EncodedConfirmedTransactionWithStatusMeta {
-                    transaction: tx.to_owned(),
-                    slot,
+                    transaction: encoded_tx,
+                    slot: *slot,
                     block_time: block_data.block_time,
                 };
                 let builder = seralize_encoded_transaction_with_status(builder, tx_wrap)?;
