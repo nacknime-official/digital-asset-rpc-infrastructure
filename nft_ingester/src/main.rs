@@ -114,6 +114,14 @@ pub async fn main() -> Result<(), IngesterError> {
     //     tasks.spawn(t);
     // }
 
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .thread_name("workers")
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap(),
+    );
     // Stream Consumers Setup -------------------------------------
     if role == IngesterRole::Ingester || role == IngesterRole::All {
         let tcp_receiver = RoutingTcpReceiver::new(
@@ -121,15 +129,18 @@ pub async fn main() -> Result<(), IngesterError> {
             config.get_tcp_receiver_reconnect_interval(false),
         );
 
-        let runtime = Arc::new(tokio::runtime::Builder::new_current_thread()
-            .thread_name("workers")
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap());
-        let runtime_clone = Arc::clone(&runtime);
-        let _account = account_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver, runtime);
-        let _txn = transaction_worker(database_pool.clone(), bg_task_sender.clone(), &tcp_receiver, runtime_clone);
+        // let _account = account_worker(
+        //     database_pool.clone(),
+        //     bg_task_sender.clone(),
+        //     &tcp_receiver,
+        //     Arc::clone(&runtime),
+        // );
+        let _txn = transaction_worker(
+            database_pool.clone(),
+            bg_task_sender.clone(),
+            &tcp_receiver,
+            Arc::clone(&runtime),
+        );
 
         let addr = config.get_tcp_receiver_addr(false);
         // TODO: don't know do we need wrap it to tasks.spawn
@@ -170,6 +181,7 @@ pub async fn main() -> Result<(), IngesterError> {
             database_pool.clone(),
             bg_task_sender.clone(),
             &tcp_receiver,
+            Arc::clone(&runtime),
         );
 
         let addr = config.get_tcp_receiver_addr(true);

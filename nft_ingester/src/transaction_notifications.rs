@@ -183,6 +183,7 @@ pub fn transaction_worker_backfiller(
     pool: Pool<Postgres>,
     bg_task_sender: UnboundedSender<TaskData>,
     receiver: &RoutingTcpReceiver,
+    runtime: Arc<tokio::runtime::Runtime>,
 ) -> () {
     let manager = Arc::new(ProgramTransformer::new(pool, bg_task_sender));
 
@@ -192,8 +193,9 @@ pub fn transaction_worker_backfiller(
             debug!("TX WORKER BACKFILLER DATA RECEIVED {:?}", data);
 
             let manager_clone = Arc::clone(&manager);
-            Handle::current().spawn_blocking(|| {
-                Handle::current().block_on(async move {
+            let runtime_clone = Arc::clone(&runtime);
+            tokio::task::block_in_place(move || {
+                runtime_clone.block_on(async move {
                     handle_transaction_backfiller(manager_clone, data).await;
                 })
             });
