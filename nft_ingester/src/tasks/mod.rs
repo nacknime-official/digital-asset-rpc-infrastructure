@@ -91,7 +91,7 @@ impl TaskManager {
         }?;
 
         let start = Utc::now();
-        let res = task_def.task(&db, *data_json).await;
+        let res = task_def.task(db, *data_json).await;
         let end = Utc::now();
         task.duration = Set(Some(
             ((end.timestamp_millis() - start.timestamp_millis()) / 1000) as i32,
@@ -275,7 +275,7 @@ impl TaskManager {
                         name,
                         task,
                         task_map.clone(),
-                        process_on_receive
+                        process_on_receive,
                     );
                 }
             }

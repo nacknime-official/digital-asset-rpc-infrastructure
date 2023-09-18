@@ -7,7 +7,7 @@ pub async fn update_asset<T>(
     id: Vec<u8>,
     seq: Option<u64>,
     model: asset::ActiveModel,
-) -> Result<(), IngesterError> 
+) -> Result<(), IngesterError>
 where
     T: ConnectionTrait + TransactionTrait,
 {
@@ -40,7 +40,7 @@ pub async fn update_creator<T>(
     creator: Vec<u8>,
     seq: u64,
     model: asset_creators::ActiveModel,
-) -> Result<(), IngesterError> 
+) -> Result<(), IngesterError>
 where
     T: ConnectionTrait + TransactionTrait,
 {

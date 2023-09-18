@@ -41,9 +41,14 @@ pub const DATABASE_URL_KEY: &str = "url";
 pub const DATABASE_LISTENER_CHANNEL_KEY: &str = "listener_channel";
 
 pub type RpcConfig = figment::value::Dict;
+pub type BigTableConfig = figment::value::Dict;
 
 pub const RPC_URL_KEY: &str = "url";
 pub const RPC_COMMITMENT_KEY: &str = "commitment";
+pub const RPC_TIMEOUT_KEY: &str = "timeout";
+
+pub const BIG_TABLE_CREDS_KEY: &str = "creds";
+pub const BIG_TABLE_TIMEOUT_KEY: &str = "timeout";
 
 #[derive(Deserialize, PartialEq, Eq, Debug, Clone)]
 pub enum IngesterRole {
@@ -71,6 +76,7 @@ pub struct IngesterConfig {
     pub messenger_config: MessengerConfig,
     pub env: Option<String>,
     pub rpc_config: RpcConfig,
+    pub big_table_config: BigTableConfig,
     pub metrics_port: Option<u16>,
     pub metrics_host: Option<String>,
     pub backfiller: Option<bool>,
@@ -81,7 +87,7 @@ pub struct IngesterConfig {
 fn setup_metrics(config: &IngesterConfig) {
     let uri = config.metrics_host.clone();
     let port = config.metrics_port;
-    let env = config.env.clone().unwrap_or("dev".to_string());
+    let env = config.env.clone().unwrap_or_else(|| "dev".to_string());
     if uri.is_some() || port.is_some() {
         let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
         socket.set_nonblocking(true).unwrap();
@@ -150,7 +156,8 @@ async fn main() {
     let bg_task_definitions: Vec<Box<dyn BgTask>> = vec![Box::new(DownloadMetadataTask {})];
     let mut background_task_manager =
         TaskManager::new(rand_string(), pool.clone(), bg_task_definitions);
-    let background_task_manager_handle = background_task_manager.start_listener(role == IngesterRole::BackgroundTaskRunner || role == IngesterRole::All);
+    let background_task_manager_handle = background_task_manager
+        .start_listener(role == IngesterRole::BackgroundTaskRunner || role == IngesterRole::All);
     let backgroun_task_sender = background_task_manager.get_sender().unwrap();
 
     let txn_stream = service_transaction_stream::<RedisMessenger>(
@@ -166,8 +173,6 @@ async fn main() {
     );
 
     let mut tasks = JoinSet::new();
-
-    
 
     let stream_size_timer = async move {
         let mut interval = time::interval(tokio::time::Duration::from_secs(10));
@@ -362,11 +367,11 @@ async fn handle_account(manager: &Arc<ProgramTransformer>, data: Vec<RecvData>) 
                     statsd_count!("ingester.account_stream_redelivery", 1);
                 }
             }
-            
+
             let data = item.data;
             // Get root of account info flatbuffers object.
-           if let Ok(account_update) = root_as_account_info(&data) {
-             
+            if let Ok(account_update) = root_as_account_info(&data) {
+
             let seen_at = Utc::now();
             let str_program_id =
                 bs58::encode(account_update.owner().unwrap().0.as_slice()).into_string();
@@ -416,7 +421,7 @@ async fn handle_account(manager: &Arc<ProgramTransformer>, data: Vec<RecvData>) 
                         statsd_count!("ingester.account_update_error", 1, "owner" => &str_program_id, "error" => "u");
                     }
                 }
-            
+
             }
         }
             ret_id

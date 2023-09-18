@@ -47,7 +47,13 @@ pub enum IngesterError {
     #[error("Unrecoverable task error")]
     UnrecoverableTaskError,
     #[error("Cache Storage Write Error {0}")]
-    CacheStorageWriteError(String)
+    CacheStorageWriteError(String),
+    #[error("Slot doesn't have tree signatures {0}")]
+    SlotDoesntHaveTreeSignatures(String),
+    #[error("DB error {0}")]
+    DbError(String),
+    #[error("Error getting data from BigTable {0}")]
+    BigTableError(String),
 }
 
 impl From<reqwest::Error> for IngesterError {

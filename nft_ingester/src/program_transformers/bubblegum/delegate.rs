@@ -7,7 +7,7 @@ use blockbuster::{
     programs::bubblegum::{BubblegumInstruction, LeafSchema},
 };
 use digital_asset_types::dao::asset;
-use sea_orm::{entity::*, DatabaseTransaction, ConnectionTrait, TransactionTrait};
+use sea_orm::{entity::*, ConnectionTrait, DatabaseTransaction, TransactionTrait};
 
 pub async fn delegate<'c, T>(
     parsing_result: &BubblegumInstruction,

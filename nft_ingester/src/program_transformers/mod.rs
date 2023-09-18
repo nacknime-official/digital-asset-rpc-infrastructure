@@ -73,7 +73,7 @@ impl ProgramTransformer {
         tx: &'a TransactionInfo<'a>,
     ) -> Result<(), IngesterError> {
         println!("Handling Transaction: {:?}", tx.signature());
-        let instructions = self.break_transaction(&tx);
+        let instructions = self.break_transaction(tx);
         let accounts = tx.account_keys().unwrap_or_default();
         let slot = tx.slot();
         let mut keys: Vec<FBPubkey> = Vec::with_capacity(accounts.len());

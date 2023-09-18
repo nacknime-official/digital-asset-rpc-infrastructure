@@ -1,7 +1,7 @@
 use blockbuster::instruction::InstructionBundle;
 use blockbuster::programs::bubblegum::{BubblegumInstruction, LeafSchema, Payload};
 use digital_asset_types::dao::{asset, asset_creators};
-use sea_orm::{Set, Unchanged, ConnectionTrait, TransactionTrait};
+use sea_orm::{ConnectionTrait, Set, TransactionTrait, Unchanged};
 
 use crate::program_transformers::bubblegum::{update_asset, update_creator};
 use crate::tasks::common::save_changelog_event;
@@ -11,7 +11,7 @@ pub async fn process<'c, T>(
     parsing_result: &BubblegumInstruction,
     bundle: &InstructionBundle<'c>,
     txn: &'c T,
-    value: bool
+    value: bool,
 ) -> Result<(), IngesterError>
 where
     T: ConnectionTrait + TransactionTrait,
