@@ -46,6 +46,7 @@ solana-transaction-status = "~1.14"
 solana-account-decoder = "~1.14"
 solana-geyser-plugin-interface = { version = "~1.14" }
 solana-sdk-macro = "~1.14"
+solana-storage-bigtable = "~1.14"
 rand = "0.8.5"
 rust-crypto = "0.2.36"
 url="2.3.1"
